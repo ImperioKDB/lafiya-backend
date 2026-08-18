@@ -1,6 +1,6 @@
 # LAFIYA Backend (FastAPI)
 
-Matches blueprint §10/§12/§13. Deploys to Render from GitHub — pushed via
+Matches blueprint SS10/SS12/SS13. Deploys to Render from GitHub — pushed via
 `push_backend.py` in Colab, never uploaded or edited locally.
 
 ## Roles and how accounts get provisioned
@@ -27,8 +27,8 @@ one.
 
 - `get_service_client()` — service-role key, bypasses RLS. Only used for
   role lookup at login and for writes to `chw_earnings`/
-  `guarantor_reputation`, which don't have (and shouldn't have) a
-  self-service RLS policy.
+  `doctor_earnings`/`guarantor_reputation`, which don't have (and
+  shouldn't have) a self-service RLS policy.
 - `get_user_client(access_token)` — scoped to the caller's own JWT, so
   every Postgres RLS policy from the migration still applies. Every
   endpoint that touches user-owned data (patients, consultations, loans,
@@ -48,13 +48,31 @@ Then `GET http://localhost:8000/api/health` should return `{"status": "ok"}`.
 ## What's live so far
 
 - `POST /api/patients` (role: chw) — registers a patient, RLS-enforced
-  to the calling CHW's own `chws.id`, accrues the ₦150 registration fee
+  to the calling CHW's own `chws.id`, accrues the NGN150 registration fee
   into `chw_earnings` immediately.
 - `GET /api/patients/{id}` (role: chw) — scoped to chw-owned patients
-  only. Doctor/admin patient access arrives with the consultations
-  endpoint next, since that needs its own RLS policy this pass didn't add.
+  only.
+- `POST /api/consultations` (role: chw) — creates a consultation against
+  a patient this chw registered, scores urgency via the rule-based
+  triage engine (`app/services/triage.py` — same logic path the USSD
+  numeric-category flow will use later, per PRD SS6.7). `transcript` is
+  optional and hand-entered for now; live Whisper wiring is next.
+- `GET /api/consultations/queue` (role: doctor) — unclaimed cases plus
+  this doctor's own claimed ones, sorted by urgency then age.
+- `PATCH /api/consultations/{id}` (role: doctor) — claims the case
+  on first write (`doctor_id` set to the calling doctor), updates
+  prescription/cost_estimate, and on `complete: true` accrues the NGN500
+  stipend into `doctor_earnings` exactly once.
+- **New RLS policy**: doctors can now `SELECT` a `patients` row if it's
+  linked through one of their own `consultations` rows — see
+  `migrations/002_consultations_rls.sql`. Doctors still cannot see
+  patients they have no consultation relationship with.
+- **New table**: `doctor_earnings` (mirrors `chw_earnings` — blueprint
+  SS11 never defined a doctor-side earnings table, so this is a new
+  addition this pass, not something restored from spec). Same
+  service-role-only write pattern as `chw_earnings`.
 
-## Next in the build order (per blueprint §24)
+## Next in the build order (per blueprint SS24)
 
-Triage/consultations endpoint, then loans + guarantors, then the Wema/
-ALAT lookup integration.
+Loans + guarantors endpoint (fee math server-side, per blueprint SS12),
+then the live Wema/ALAT lookup integration.
