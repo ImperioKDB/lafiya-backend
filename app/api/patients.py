@@ -6,7 +6,7 @@ from app.models.patient import PatientCreate, PatientOut
 
 router = APIRouter(prefix="/api/patients", tags=["patients"])
 
-# From blueprint §1/§4 — CHW earns this per verified visit registered.
+# From blueprint SS1/SS4 -- CHW earns this per verified visit registered.
 REGISTRATION_FEE_NGN = 150
 
 
@@ -38,10 +38,10 @@ def register_patient(payload: PatientCreate, user: CurrentUser = Depends(require
     patient = insert_result.data[0]
 
     # chw_earnings has no self-service RLS policy for inserts (only a
-    # select policy — see blueprint §11), so this write goes through the
+    # select policy -- see blueprint SS11), so this write goes through the
     # service client. The registration fee is marked accrued immediately;
     # there's no separate "visit verification" step defined yet, so this
-    # is the simplest correct behavior for now — flag if that changes.
+    # is the simplest correct behavior for now -- flag if that changes.
     service_client = get_service_client()
     service_client.table("chw_earnings").insert(
         {
@@ -57,10 +57,10 @@ def register_patient(payload: PatientCreate, user: CurrentUser = Depends(require
 
 
 @router.get("/{patient_id}", response_model=PatientOut)
-# Scoped to chw-owned patients only for now. Doctor/admin access to
-# patient records arrives with the consultations endpoint next -- that
-# needs its own RLS policy on `patients` (doctors currently have none),
-# not a workaround here.
+# Scoped to chw-owned patients for this endpoint. Doctor access to
+# patient records now exists too, via the doctor_read_linked_patients
+# RLS policy (migrations/002_consultations_rls.sql) -- but that's read
+# access enforced at the DB layer, not a second code path here.
 def get_patient(patient_id: str, user: CurrentUser = Depends(require_role("chw"))):
     client = get_user_client(user.access_token)
     result = client.table("patients").select("*").eq("id", patient_id).execute()
