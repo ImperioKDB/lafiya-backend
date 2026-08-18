@@ -10,7 +10,7 @@ class Settings:
     supabase_service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
     supabase_jwt_secret = os.environ.get("SUPABASE_JWT_SECRET", "")
 
-    # Fallback admin allowlist — an email here gets role='admin' even with
+    # Fallback admin allowlist -- an email here gets role='admin' even with
     # no chws/doctors/pharmacies row. Comma-separated in the env var.
     admin_emails = [
         e.strip().lower()
