@@ -74,5 +74,22 @@ Then `GET http://localhost:8000/api/health` should return `{"status": "ok"}`.
 
 ## Next in the build order (per blueprint SS24)
 
-Loans + guarantors endpoint (fee math server-side, per blueprint SS12),
-then the live Wema/ALAT lookup integration.
+Pharmacy claim submission + variance matching, then the fraud rule
+engine.
+
+## Wema/ALAT sandbox setup
+
+`GET /api/wema/account-lookup/{account_number}` (role: chw) calls the
+live ALAT Playground sandbox -- Wallet Services, Account Management API,
+"Get Wallet Details" operation. To make this work in Render:
+
+1. Sign in at playground.alat.ng, subscribe to **Wallet Services**
+   (nothing else -- see below), attach it to an Application, generate keys.
+2. Set `WEMA_API_KEY` in Render's environment variables. `WEMA_BASE_URL`
+   already defaults to `https://apiplayground.alat.ng`.
+
+Deliberately not wired up: any wallet/account **creation** endpoint
+(Wallet Creation API - BVN, Wallet Creation API - NIN, Face Biometric,
+E-Commerce Wallet Creation). All of them require a real government ID
+check, one way or another -- that conflicts with the locked decision to
+keep NIN simulated for the life of this project. Lookup/balance only.
