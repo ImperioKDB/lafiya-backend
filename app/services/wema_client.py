@@ -7,11 +7,11 @@ from app.core.config import settings
 # not guessed: https://apiplayground.alat.ng/ws-acct-mgt/api/
 # AccountMaintenance/CustomerAccount/GetAccountV2/accountNumber/{accountNumber}
 #
-# Header name (x-api-key) is NOT confirmed from that screen -- it's the
-# convention documented on every other ALAT product page (Wallet
-# Creation, Account Creation, etc). If this 401s once WEMA_API_KEY is
-# set in Render, that's the first thing to check, not a sign the whole
-# integration is wrong.
+# Header name CONFIRMED via the console's own "Try this operation" panel:
+# Ocp-Apim-Subscription-Key (Azure API Management's default header --
+# this portal is APIM-based, not the x-api-key convention the other
+# ALAT product docs implied). The first guess (x-api-key) was wrong and
+# returned {"successful": false, "message": "Apikey is null!"}.
 #
 # Deliberately does NOT call any account/wallet CREATION endpoint --
 # every ALAT creation flow needs a real BVN/NIN (directly, or indirectly
@@ -36,7 +36,7 @@ def get_wallet_details(account_number: str) -> dict:
     try:
         response = requests.get(
             url,
-            headers={"x-api-key": settings.wema_api_key},
+            headers={"Ocp-Apim-Subscription-Key": settings.wema_api_key},
             timeout=10,
         )
     except requests.RequestException as e:
