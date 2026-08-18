@@ -6,8 +6,8 @@ class PatientCreate(BaseModel):
     full_name: str = Field(..., min_length=2, max_length=200)
     phone: str = Field(..., min_length=7, max_length=20)
     age: Optional[int] = Field(default=None, ge=0, le=130)
-    # NIN is intentionally optional and unverified at this layer — see
-    # blueprint §4/§17: registration never blocks on NIN in this build.
+    # NIN is intentionally optional and unverified at this layer -- see
+    # blueprint SS4/SS17: registration never blocks on NIN in this build.
     nin: Optional[str] = None
 
 
