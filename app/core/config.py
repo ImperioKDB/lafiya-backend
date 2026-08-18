@@ -18,5 +18,12 @@ class Settings:
         if e.strip()
     ]
 
+    # ALAT Playground sandbox -- confirmed live at
+    # https://apiplayground.alat.ng (Wallet Services - Account Management
+    # API, "Get Wallet Details" operation). Set the real value only in
+    # Render's dashboard -- never commit it, never paste it into chat.
+    wema_base_url = os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng")
+    wema_api_key = os.environ.get("WEMA_API_KEY", "")
+
 
 settings = Settings()
