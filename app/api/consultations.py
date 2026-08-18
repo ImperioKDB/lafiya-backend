@@ -3,7 +3,7 @@ from app.core.auth import require_role
 from app.core.supabase_client import get_user_client, get_service_client
 from app.models.common import CurrentUser
 from app.models.consultation import ConsultationCreate, ConsultationUpdate, ConsultationOut
-from app.services.triage import score_urgency, LEVEL_LABELS
+from app.services.triage import score_urgency, _label as urgency_label
 
 router = APIRouter(prefix="/api/consultations", tags=["consultations"])
 
@@ -15,7 +15,8 @@ STIPEND_NGN = 500
 
 def _to_out(row: dict) -> dict:
     row = dict(row)
-    row["urgency_level"] = LEVEL_LABELS.get(row.get("urgency_score"), "low")
+    score = row.get("urgency_score")
+    row["urgency_level"] = urgency_label(score) if score is not None else "low"
     return row
 
 
@@ -35,7 +36,7 @@ def create_consultation(payload: ConsultationCreate, user: CurrentUser = Depends
                 "patient_id": payload.patient_id,
                 "transcript": payload.transcript,
                 "urgency_score": scored["score"],
-                "status": "pending",
+                "status": "queued",
             }
         )
         .execute()
@@ -51,15 +52,15 @@ def create_consultation(payload: ConsultationCreate, user: CurrentUser = Depends
 
 
 @router.get("/queue", response_model=list[ConsultationOut])
-# RLS's doctor_read_queue_and_own policy returns unclaimed cases (any
-# doctor) plus this doctor's own already-claimed cases. Sorted here by
-# urgency first, oldest-first as the tiebreaker.
+# RLS's doctor_consultations policy returns unclaimed cases (any doctor)
+# plus this doctor's own already-claimed cases. Sorted here by urgency
+# first, oldest-first as the tiebreaker.
 def get_queue(user: CurrentUser = Depends(require_role("doctor"))):
     client = get_user_client(user.access_token)
     result = (
         client.table("consultations")
         .select("*")
-        .eq("status", "pending")
+        .eq("status", "queued")
         .order("urgency_score", desc=True)
         .order("created_at", desc=False)
         .execute()
@@ -95,8 +96,8 @@ def update_consultation(
         update_payload["prescription"] = payload.prescription
     if payload.cost_estimate is not None:
         update_payload["cost_estimate"] = payload.cost_estimate
-    if current["status"] == "pending":
-        update_payload["status"] = "in_progress"
+    if current["status"] == "queued":
+        update_payload["status"] = "in_review"
     if payload.complete:
         update_payload["status"] = "completed"
 
