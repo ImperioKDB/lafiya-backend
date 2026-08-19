@@ -27,8 +27,8 @@ one.
 
 - `get_service_client()` — service-role key, bypasses RLS. Only used for
   role lookup at login and for writes to `chw_earnings`/
-  `doctor_earnings`/`guarantor_reputation`, which don't have (and
-  shouldn't have) a self-service RLS policy.
+  `doctor_earnings`/`guarantor_reputation`/`fraud_flags`, none of which
+  have (or should have) a self-service RLS policy.
 - `get_user_client(access_token)` — scoped to the caller's own JWT, so
   every Postgres RLS policy from the migration still applies. Every
   endpoint that touches user-owned data (patients, consultations, loans,
@@ -55,27 +55,52 @@ Then `GET http://localhost:8000/api/health` should return `{"status": "ok"}`.
 - `POST /api/consultations` (role: chw) — creates a consultation against
   a patient this chw registered, scores urgency via the rule-based
   triage engine (`app/services/triage.py` — same logic path the USSD
-  numeric-category flow will use later, per PRD SS6.7). `transcript` is
-  optional and hand-entered for now; live Whisper wiring is next.
+  numeric-category flow will use later, per PRD SS6.7).
 - `GET /api/consultations/queue` (role: doctor) — unclaimed cases plus
   this doctor's own claimed ones, sorted by urgency then age.
 - `PATCH /api/consultations/{id}` (role: doctor) — claims the case
-  on first write (`doctor_id` set to the calling doctor), updates
-  prescription/cost_estimate, and on `complete: true` accrues the NGN500
-  stipend into `doctor_earnings` exactly once.
-- **New RLS policy**: doctors can now `SELECT` a `patients` row if it's
-  linked through one of their own `consultations` rows — see
-  `migrations/002_consultations_rls.sql`. Doctors still cannot see
-  patients they have no consultation relationship with.
-- **New table**: `doctor_earnings` (mirrors `chw_earnings` — blueprint
-  SS11 never defined a doctor-side earnings table, so this is a new
-  addition this pass, not something restored from spec). Same
-  service-role-only write pattern as `chw_earnings`.
+  on first write, updates prescription/cost_estimate, accrues the NGN500
+  stipend into `doctor_earnings` exactly once on completion.
+- `POST /api/loans` (role: chw) — server-side fee math (flat 5%), tier
+  validated against the DB check constraint.
+- `GET /api/loans/{id}/status` (role: chw) — loan + its guarantors.
+- `POST /api/loans/{id}/guarantors` (role: chw) — attaches exactly two,
+  50/50 liability, blocked if either phone is barred in
+  `guarantor_reputation`.
+- `POST /api/loans/{id}/disburse` (role: chw) — **new this pass**.
+  Simulated disbursement: flips `loans.status` to `disbursed`. Requires
+  both guarantors to already be `confirmed`. No money moves anywhere —
+  same "real payload shape, simulated" pattern as everything else
+  access-constrained in this build. Required before a pharmacy claim can
+  be submitted against the loan; nothing in the prior build had this
+  transition, so claims had nothing to gate against until now.
+- `POST /api/guarantors/{id}/confirm` / `/decline` — phone-match auth,
+  explicitly flagged as a placeholder (see file comments) pending a
+  signed one-time SMS token, which depends on the Africa's Talking SMS
+  integration (depth-layer item, not built yet).
+- `GET /api/wema/account-lookup/{account_number}` (role: chw) — live
+  call to the ALAT Playground sandbox, Wallet Services / Get Wallet
+  Details. Lookup/balance only, no creation endpoint wired up (would
+  need a real BVN/NIN, which conflicts with the locked decision to keep
+  NIN simulated).
+- `POST /api/claims` (role: pharmacy) — **new this pass**. Pharmacy
+  submits `loan_id` + `claim_amount`; backend pulls `cost_estimate` off
+  the linked consultation, computes variance, and either matches
+  (`match_status='matched'`, simulated payout) or blocks entirely
+  (`match_status='variance_flagged'`, a `fraud_flags` row raised for
+  admin review, no payout). Threshold is 15%, a decision made this pass
+  — see `app/api/claims.py`. Requires the pharmacy to be `verified` and
+  the loan to already be `disbursed`.
+- `GET /api/claims/{id}` (role: pharmacy) — scoped to the calling
+  pharmacy's own claims.
 
 ## Next in the build order (per blueprint SS24)
 
-Pharmacy claim submission + variance matching, then the fraud rule
-engine.
+Fraud rule engine (velocity, guarantor overlap — variance-based flagging
+now exists) + the admin review console (pharmacy verification + fraud
+flag review, tabbed, per blueprint SS9/SS20). `GET /api/claims/{id}` and
+`GET /api/fraud-flags` for admin (all entities, not just own) are part
+of that same piece of work, not built yet.
 
 ## Wema/ALAT sandbox setup
 
