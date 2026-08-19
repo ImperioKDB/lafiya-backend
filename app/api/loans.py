@@ -104,3 +104,45 @@ def attach_guarantors(loan_id: str, payload: GuarantorAttach, user: CurrentUser 
         raise HTTPException(status_code=403, detail="Could not attach guarantors")
 
     return insert_result.data
+
+
+@router.post("/{loan_id}/disburse", response_model=LoanOut)
+# NEW this pass. Simulated disbursement -- blueprint SS1/SS9: real
+# payout is access-constrained (needs coordination beyond the ALAT
+# sandbox with Wema's banking side), so this only flips loans.status to
+# 'disbursed'. No money moves anywhere -- same "real payload shape,
+# simulated" pattern as everything else access-constrained in this
+# build. Required before a pharmacy claim can be submitted against this
+# loan (app/api/claims.py) -- there was previously no transition into
+# 'disbursed' anywhere in the codebase, which left the claims flow with
+# nothing to gate against.
+def disburse_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
+    client = get_user_client(user.access_token)
+
+    loan_result = client.table("loans").select("*").eq("id", loan_id).execute()
+    if not loan_result.data:
+        raise HTTPException(status_code=404, detail="Loan not found or not accessible")
+    loan = loan_result.data[0]
+
+    if loan["status"] == "disbursed":
+        raise HTTPException(status_code=409, detail="Loan has already been disbursed")
+    if loan["status"] != "pending":
+        raise HTTPException(status_code=409, detail="Loan is not in a disbursable state (status: " + loan["status"] + ")")
+
+    guarantors_result = client.table("guarantors").select("status").eq("loan_id", loan_id).execute()
+    guarantors = guarantors_result.data or []
+    if len(guarantors) != 2:
+        raise HTTPException(status_code=409, detail="Loan does not have two guarantors attached yet")
+    if any(g["status"] != "confirmed" for g in guarantors):
+        raise HTTPException(status_code=409, detail="Both guarantors must confirm before disbursement")
+
+    update_result = (
+        client.table("loans")
+        .update({"status": "disbursed"})
+        .eq("id", loan_id)
+        .execute()
+    )
+    if not update_result.data:
+        raise HTTPException(status_code=403, detail="Could not update loan status -- not accessible")
+
+    return update_result.data[0]
