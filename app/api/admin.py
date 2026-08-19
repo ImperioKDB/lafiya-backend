@@ -4,6 +4,7 @@ from app.core.auth import require_role
 from app.core.supabase_client import get_service_client
 from app.models.common import CurrentUser
 from app.models.admin import PharmacyOut, PharmacyStatusUpdate, FraudFlagOut, FraudFlagStatusUpdate
+from app.services.guarantor_reputation import apply_reputation_bar
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -60,13 +61,12 @@ def list_fraud_flags(status: Optional[str] = "open", user: CurrentUser = Depends
 
 @router.patch("/fraud-flags/{flag_id}", response_model=FraudFlagOut)
 # Blueprint SS4/SS30 -- reviewed/cleared/confirmed_fraud, admin-gated,
-# nothing auto-resolves. One cascade wired here: confirming fraud on an
-# entity_type='guarantor' flag (raised by the overlap check in
-# app/fraud/rules.py) applies the same one-strike bar used for a
-# repayment default -- guarantor_reputation.barred=true. A
-# repayment-default-triggered bar is a separate, not-yet-built trigger
-# (needs the repayment flow itself); this is the fraud-review path
-# specifically, not a substitute for that one.
+# nothing auto-resolves. Confirming fraud on an entity_type='guarantor'
+# flag (raised by the overlap check in app/fraud/rules.py) applies the
+# same one-strike bar used for a loan default -- now via the shared
+# apply_reputation_bar helper (app/services/guarantor_reputation.py) so
+# this cascade and the loan-default cascade in app/api/loans.py can
+# never drift apart.
 def update_fraud_flag_status(
     flag_id: str, payload: FraudFlagStatusUpdate, user: CurrentUser = Depends(require_role("admin"))
 ):
@@ -94,15 +94,6 @@ def update_fraud_flag_status(
             .execute()
         )
         if guarantor_row.data:
-            phone = guarantor_row.data[0]["guarantor_phone"]
-            rep = service_client.table("guarantor_reputation").select("id, default_count").eq("guarantor_phone", phone).execute()
-            if rep.data:
-                service_client.table("guarantor_reputation").update(
-                    {"default_count": rep.data[0]["default_count"] + 1, "barred": True}
-                ).eq("guarantor_phone", phone).execute()
-            else:
-                service_client.table("guarantor_reputation").insert(
-                    {"guarantor_phone": phone, "default_count": 1, "barred": True}
-                ).execute()
+            apply_reputation_bar(service_client, guarantor_row.data[0]["guarantor_phone"])
 
     return update_result.data[0]
