@@ -43,6 +43,12 @@ class GuarantorOut(BaseModel):
     status: str
     confirmed_at: Optional[str] = None
     created_at: str
+    # NEW -- not a DB column, populated at request time only. Lets a
+    # future frontend show a visible "SMS failed, retry" state per
+    # blueprint SS17 instead of silently assuming delivery succeeded.
+    # None on any response path that doesn't attempt an SMS (e.g. if this
+    # model is ever reused elsewhere) so it stays backward-compatible.
+    sms_sent: Optional[bool] = None
 
 
 class LoanStatusOut(BaseModel):
@@ -50,10 +56,10 @@ class LoanStatusOut(BaseModel):
     guarantors: List[GuarantorOut]
 
 
-class GuarantorPhoneAction(BaseModel):
-    # No Supabase login exists for guarantors (blueprint SS13 -- only 4
-    # roles, none of them a guarantor/patient role). The phone number
-    # itself is the proof of identity here, matching the "confirm via
-    # SMS-link or USSD webhook" design in PRD SS6.7 -- see the caveat in
-    # app/api/guarantors.py.
-    guarantor_phone: str
+class GuarantorTokenAction(BaseModel):
+    # Replaces the old GuarantorPhoneAction placeholder. A one-time
+    # token issued when the guarantor was attached (app/api/loans.py),
+    # delivered via the real SMS in app/services/sms_client.py, and
+    # required (not just a bare phone match) to confirm or decline --
+    # see app/api/guarantors.py.
+    token: str
