@@ -4,6 +4,7 @@ from app.core.supabase_client import get_user_client, get_service_client
 from app.models.common import CurrentUser
 from app.models.loan import LoanCreate, LoanOut, GuarantorAttach, GuarantorOut, LoanStatusOut
 from app.fraud.rules import check_loan_velocity, check_guarantor_overlap
+from app.services.guarantor_reputation import apply_reputation_bar
 
 router = APIRouter(prefix="/api/loans", tags=["loans"])
 
@@ -163,23 +164,9 @@ def disburse_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))
 
 
 @router.post("/{loan_id}/repay", response_model=LoanOut)
-# NEW this pass. Blueprint SS1/00_START_HERE -- CHW commission is 20%
-# of the flat fee, accrued on repayment. chw_earnings.type already
-# allowed 'commission' in its check constraint from the start, but
-# nothing in the backend ever wrote one until now -- this is the
-# missing half of the earnings model the docs lean on (loan repayment
-# rate is named as the single most important long-term metric,
-# blueprint SS19).
-#
-# Full-repayment-only, matching the live schema: loans has no partial-
-# repayment or repaid_amount column, just the status enum
-# (pending/disbursed/repaid/defaulted). A partial-repayment ledger would
-# be a real schema change, not something this endpoint can decide on its
-# own -- flag if that's needed later.
-#
-# Does NOT touch guarantor_reputation -- that's the default cascade
-# (reputation hit + bar), a separate trigger on the same loan lifecycle
-# for the failure path, not this success path. Still no endpoint for it.
+# Blueprint SS1/00_START_HERE -- CHW commission is 20% of the flat fee,
+# accrued on repayment. Full-repayment-only, matching the live schema:
+# loans has no partial-repayment column, just the status enum.
 def repay_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
     client = get_user_client(user.access_token)
 
@@ -202,9 +189,6 @@ def repay_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
     if not update_result.data:
         raise HTTPException(status_code=403, detail="Could not update loan status -- not accessible")
 
-    # chw_earnings has no self-service RLS policy for inserts, same
-    # pattern as the registration fee in app/api/patients.py -- service
-    # client only.
     commission_amount = round(loan["flat_fee"] * COMMISSION_PCT, 2)
     service_client = get_service_client()
     service_client.table("chw_earnings").insert(
@@ -216,5 +200,52 @@ def repay_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
             "status": "accrued",
         }
     ).execute()
+
+    return update_result.data[0]
+
+
+@router.post("/{loan_id}/default", response_model=LoanOut)
+# NEW this pass -- the failure-path counterpart to repay_loan above.
+# Blueprint SS4/SS11/00_START_HERE: a confirmed default bars the
+# guarantor(s) who actually carried liability (status='confirmed' only
+# -- a guarantor who declined never took on liability and shouldn't be
+# touched, matching blueprint SS30's stance that declining carries no
+# penalty). Uses the shared apply_reputation_bar helper
+# (app/services/guarantor_reputation.py) so this and the admin
+# confirmed_fraud cascade can never apply the bar logic differently.
+#
+# FLAG, not solved here: this is self-service by the CHW who owns the
+# loan, same as disburse/repay -- there's no independent check that the
+# patient actually failed to pay. That's a real risk given blueprint
+# SS30's own guarantor-coercion caution; an admin-review step before the
+# bar lands is a reasonable tightening if this becomes a real product,
+# not a hackathon demo.
+def default_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
+    client = get_user_client(user.access_token)
+    service_client = get_service_client()
+
+    loan_result = client.table("loans").select("*").eq("id", loan_id).execute()
+    if not loan_result.data:
+        raise HTTPException(status_code=404, detail="Loan not found or not accessible")
+    loan = loan_result.data[0]
+
+    if loan["status"] == "defaulted":
+        raise HTTPException(status_code=409, detail="Loan is already marked defaulted")
+    if loan["status"] != "disbursed":
+        raise HTTPException(status_code=409, detail="Only a disbursed loan can be marked defaulted (status: " + loan["status"] + ")")
+
+    update_result = (
+        client.table("loans")
+        .update({"status": "defaulted"})
+        .eq("id", loan_id)
+        .execute()
+    )
+    if not update_result.data:
+        raise HTTPException(status_code=403, detail="Could not update loan status -- not accessible")
+
+    guarantors_result = client.table("guarantors").select("guarantor_phone, status").eq("loan_id", loan_id).execute()
+    for g in (guarantors_result.data or []):
+        if g["status"] == "confirmed":
+            apply_reputation_bar(service_client, g["guarantor_phone"])
 
     return update_result.data[0]
