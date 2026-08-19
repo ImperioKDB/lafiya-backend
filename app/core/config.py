@@ -25,5 +25,14 @@ class Settings:
     wema_base_url = os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng")
     wema_api_key = os.environ.get("WEMA_API_KEY", "")
 
+    # Africa's Talking USSD sandbox -- the shared/dedicated service code
+    # assigned when the channel was created in their dashboard (USSD ->
+    # Create Channel). Used only as a minimal sanity check in
+    # app/api/ussd.py, since AT's USSD callback has no real signing
+    # mechanism to verify against. Left unset, the check is skipped
+    # entirely rather than silently blocking traffic on a misconfigured
+    # env var.
+    ussd_service_code = os.environ.get("USSD_SERVICE_CODE", "")
+
 
 settings = Settings()
