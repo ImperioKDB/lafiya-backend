@@ -1,10 +1,14 @@
+import secrets
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import require_role
+from app.core.config import settings
 from app.core.supabase_client import get_user_client, get_service_client
 from app.models.common import CurrentUser
 from app.models.loan import LoanCreate, LoanOut, GuarantorAttach, GuarantorOut, LoanStatusOut
 from app.fraud.rules import check_loan_velocity, check_guarantor_overlap
 from app.services.guarantor_reputation import apply_reputation_bar
+from app.services.sms_client import send_sms, SmsSendError
 
 router = APIRouter(prefix="/api/loans", tags=["loans"])
 
@@ -16,6 +20,11 @@ FLAT_FEE_PCT = 0.05
 # 00_START_HERE.md -- locked decision, not invented here: CHW commission
 # is 20% of the flat fee, paid on repayment.
 COMMISSION_PCT = 0.20
+
+# Decision made this pass, not restated from spec: a guarantor
+# confirmation link is valid for 72 hours. Change here if a different
+# window is wanted.
+GUARANTOR_TOKEN_VALID_HOURS = 72
 
 
 @router.post("", response_model=LoanOut, status_code=201)
@@ -81,9 +90,10 @@ def attach_guarantors(loan_id: str, payload: GuarantorAttach, user: CurrentUser 
     client = get_user_client(user.access_token)
     service_client = get_service_client()
 
-    loan_check = client.table("loans").select("id").eq("id", loan_id).execute()
+    loan_check = client.table("loans").select("id, amount").eq("id", loan_id).execute()
     if not loan_check.data:
         raise HTTPException(status_code=404, detail="Loan not found or not accessible")
+    loan = loan_check.data[0]
 
     existing_guarantors = client.table("guarantors").select("id").eq("loan_id", loan_id).execute()
     if existing_guarantors.data:
@@ -101,26 +111,63 @@ def attach_guarantors(loan_id: str, payload: GuarantorAttach, user: CurrentUser 
                 detail=phone + " is barred from guaranteeing loans (prior confirmed default)",
             )
 
-    insert_result = (
-        client.table("guarantors")
-        .insert(
-            [
-                {"loan_id": loan_id, "guarantor_phone": phones[0], "liability_share": 0.5, "status": "pending"},
-                {"loan_id": loan_id, "guarantor_phone": phones[1], "liability_share": 0.5, "status": "pending"},
-            ]
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=GUARANTOR_TOKEN_VALID_HOURS)).isoformat()
+
+    rows_to_insert = []
+    tokens_by_phone = {}
+    for phone in phones:
+        token = secrets.token_urlsafe(24)
+        tokens_by_phone[phone] = token
+        rows_to_insert.append(
+            {
+                "loan_id": loan_id,
+                "guarantor_phone": phone,
+                "liability_share": 0.5,
+                "status": "pending",
+                "confirmation_token": token,
+                "confirmation_token_expires_at": expires_at,
+            }
         )
-        .execute()
-    )
+
+    insert_result = client.table("guarantors").insert(rows_to_insert).execute()
 
     if not insert_result.data:
         raise HTTPException(status_code=403, detail="Could not attach guarantors")
 
     rows = insert_result.data
 
-    # Overlap check per guarantor row, after insert, never blocks --
-    # same reasoning as the velocity check above.
     for row in rows:
+        # Overlap check per guarantor row, after insert, never blocks --
+        # same reasoning as the velocity check in create_loan above.
         check_guarantor_overlap(service_client, row["guarantor_phone"], row["id"])
+
+        # Blueprint SS30's explicit mitigation, not just the technical
+        # token: the SMS states plainly that declining is not shared
+        # with the borrower, to reduce the social-coercion risk named in
+        # that section.
+        confirm_url = (
+            (settings.frontend_base_url or "https://lafiya.app")
+            + "/guarantor/confirm?id="
+            + row["id"]
+            + "&token="
+            + tokens_by_phone[row["guarantor_phone"]]
+        )
+        message = (
+            "LAFIYA: You've been asked to guarantee a NGN"
+            + str(int(loan["amount"]))
+            + " loan. Confirm or decline here (your decision is not shared with the borrower): "
+            + confirm_url
+        )
+
+        try:
+            send_sms(row["guarantor_phone"], message)
+            row["sms_sent"] = True
+        except SmsSendError:
+            # Deliberately does not block the attach -- the guarantor
+            # row and token already exist and are valid. A future
+            # frontend should surface sms_sent=false as a visible retry
+            # state (blueprint SS17), not silently assume delivery.
+            row["sms_sent"] = False
 
     return rows
 
@@ -205,21 +252,18 @@ def repay_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
 
 
 @router.post("/{loan_id}/default", response_model=LoanOut)
-# NEW this pass -- the failure-path counterpart to repay_loan above.
-# Blueprint SS4/SS11/00_START_HERE: a confirmed default bars the
-# guarantor(s) who actually carried liability (status='confirmed' only
-# -- a guarantor who declined never took on liability and shouldn't be
-# touched, matching blueprint SS30's stance that declining carries no
-# penalty). Uses the shared apply_reputation_bar helper
-# (app/services/guarantor_reputation.py) so this and the admin
-# confirmed_fraud cascade can never apply the bar logic differently.
+# The failure-path counterpart to repay_loan above. Blueprint
+# SS4/SS11/00_START_HERE: a confirmed default bars the guarantor(s) who
+# actually carried liability (status='confirmed' only). Uses the shared
+# apply_reputation_bar helper (app/services/guarantor_reputation.py) so
+# this and the admin confirmed_fraud cascade can never apply the bar
+# logic differently.
 #
 # FLAG, not solved here: this is self-service by the CHW who owns the
 # loan, same as disburse/repay -- there's no independent check that the
-# patient actually failed to pay. That's a real risk given blueprint
-# SS30's own guarantor-coercion caution; an admin-review step before the
-# bar lands is a reasonable tightening if this becomes a real product,
-# not a hackathon demo.
+# patient actually failed to pay. Real risk given blueprint SS30's own
+# guarantor-coercion caution; an admin-review step before the bar lands
+# is a reasonable tightening later, not a hackathon-demo concern.
 def default_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
     client = get_user_client(user.access_token)
     service_client = get_service_client()
