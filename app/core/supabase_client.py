@@ -4,9 +4,9 @@ from app.core.config import settings
 
 # Bypasses RLS entirely. Use only for operations no single user owns --
 # role lookups at login, and writes to chw_earnings/doctor_earnings/
-# guarantor_reputation, which have RLS enabled with zero self-service
-# write policies on purpose (see blueprint SS14). Never expose this key
-# to the frontend.
+# guarantor_reputation/fraud_flags, which have RLS enabled with zero
+# self-service write policies on purpose (see blueprint SS14). Never
+# expose this key to the frontend.
 def get_service_client() -> Client:
     return create_client(settings.supabase_url, settings.supabase_service_role_key)
 
