@@ -12,6 +12,10 @@ router = APIRouter(prefix="/api/loans", tags=["loans"])
 # client payload (blueprint SS14).
 FLAT_FEE_PCT = 0.05
 
+# 00_START_HERE.md -- locked decision, not invented here: CHW commission
+# is 20% of the flat fee, paid on repayment.
+COMMISSION_PCT = 0.20
+
 
 @router.post("", response_model=LoanOut, status_code=201)
 # RLS's chw_insert_own_patient_loans policy requires patient_id to
@@ -154,5 +158,63 @@ def disburse_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))
     )
     if not update_result.data:
         raise HTTPException(status_code=403, detail="Could not update loan status -- not accessible")
+
+    return update_result.data[0]
+
+
+@router.post("/{loan_id}/repay", response_model=LoanOut)
+# NEW this pass. Blueprint SS1/00_START_HERE -- CHW commission is 20%
+# of the flat fee, accrued on repayment. chw_earnings.type already
+# allowed 'commission' in its check constraint from the start, but
+# nothing in the backend ever wrote one until now -- this is the
+# missing half of the earnings model the docs lean on (loan repayment
+# rate is named as the single most important long-term metric,
+# blueprint SS19).
+#
+# Full-repayment-only, matching the live schema: loans has no partial-
+# repayment or repaid_amount column, just the status enum
+# (pending/disbursed/repaid/defaulted). A partial-repayment ledger would
+# be a real schema change, not something this endpoint can decide on its
+# own -- flag if that's needed later.
+#
+# Does NOT touch guarantor_reputation -- that's the default cascade
+# (reputation hit + bar), a separate trigger on the same loan lifecycle
+# for the failure path, not this success path. Still no endpoint for it.
+def repay_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
+    client = get_user_client(user.access_token)
+
+    loan_result = client.table("loans").select("*").eq("id", loan_id).execute()
+    if not loan_result.data:
+        raise HTTPException(status_code=404, detail="Loan not found or not accessible")
+    loan = loan_result.data[0]
+
+    if loan["status"] == "repaid":
+        raise HTTPException(status_code=409, detail="Loan has already been repaid")
+    if loan["status"] != "disbursed":
+        raise HTTPException(status_code=409, detail="Loan is not in a repayable state (status: " + loan["status"] + ")")
+
+    update_result = (
+        client.table("loans")
+        .update({"status": "repaid"})
+        .eq("id", loan_id)
+        .execute()
+    )
+    if not update_result.data:
+        raise HTTPException(status_code=403, detail="Could not update loan status -- not accessible")
+
+    # chw_earnings has no self-service RLS policy for inserts, same
+    # pattern as the registration fee in app/api/patients.py -- service
+    # client only.
+    commission_amount = round(loan["flat_fee"] * COMMISSION_PCT, 2)
+    service_client = get_service_client()
+    service_client.table("chw_earnings").insert(
+        {
+            "chw_id": user.role_row_id,
+            "type": "commission",
+            "amount": commission_amount,
+            "related_entity_id": loan_id,
+            "status": "accrued",
+        }
+    ).execute()
 
     return update_result.data[0]
