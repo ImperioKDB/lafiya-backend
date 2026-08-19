@@ -3,6 +3,7 @@ from app.core.auth import require_role
 from app.core.supabase_client import get_user_client, get_service_client
 from app.models.common import CurrentUser
 from app.models.loan import LoanCreate, LoanOut, GuarantorAttach, GuarantorOut, LoanStatusOut
+from app.fraud.rules import check_loan_velocity, check_guarantor_overlap
 
 router = APIRouter(prefix="/api/loans", tags=["loans"])
 
@@ -43,7 +44,13 @@ def create_loan(payload: LoanCreate, user: CurrentUser = Depends(require_role("c
             detail="Could not create loan -- patient not found or not registered by you",
         )
 
-    return insert_result.data[0]
+    loan = insert_result.data[0]
+
+    # Fraud check runs after the loan exists, never blocks it -- see
+    # app/fraud/rules.py for the threshold and why this only flags.
+    check_loan_velocity(get_service_client(), user.role_row_id, loan["id"])
+
+    return loan
 
 
 @router.get("/{loan_id}/status", response_model=LoanStatusOut)
@@ -103,19 +110,22 @@ def attach_guarantors(loan_id: str, payload: GuarantorAttach, user: CurrentUser 
     if not insert_result.data:
         raise HTTPException(status_code=403, detail="Could not attach guarantors")
 
-    return insert_result.data
+    rows = insert_result.data
+
+    # Overlap check per guarantor row, after insert, never blocks --
+    # same reasoning as the velocity check above.
+    for row in rows:
+        check_guarantor_overlap(service_client, row["guarantor_phone"], row["id"])
+
+    return rows
 
 
 @router.post("/{loan_id}/disburse", response_model=LoanOut)
-# NEW this pass. Simulated disbursement -- blueprint SS1/SS9: real
-# payout is access-constrained (needs coordination beyond the ALAT
-# sandbox with Wema's banking side), so this only flips loans.status to
-# 'disbursed'. No money moves anywhere -- same "real payload shape,
-# simulated" pattern as everything else access-constrained in this
-# build. Required before a pharmacy claim can be submitted against this
-# loan (app/api/claims.py) -- there was previously no transition into
-# 'disbursed' anywhere in the codebase, which left the claims flow with
-# nothing to gate against.
+# Simulated disbursement -- blueprint SS1/SS9: real payout is
+# access-constrained (needs coordination beyond the ALAT sandbox with
+# Wema's banking side), so this only flips loans.status to 'disbursed'.
+# No money moves anywhere. Required before a pharmacy claim can be
+# submitted against this loan (app/api/claims.py).
 def disburse_loan(loan_id: str, user: CurrentUser = Depends(require_role("chw"))):
     client = get_user_client(user.access_token)
 
