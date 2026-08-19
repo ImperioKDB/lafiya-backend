@@ -26,13 +26,21 @@ class Settings:
     wema_api_key = os.environ.get("WEMA_API_KEY", "")
 
     # Africa's Talking USSD sandbox -- the shared/dedicated service code
-    # assigned when the channel was created in their dashboard (USSD ->
-    # Create Channel). Used only as a minimal sanity check in
-    # app/api/ussd.py, since AT's USSD callback has no real signing
-    # mechanism to verify against. Left unset, the check is skipped
-    # entirely rather than silently blocking traffic on a misconfigured
-    # env var.
+    # assigned when the channel was created in their dashboard. Used only
+    # as a minimal sanity check in app/api/ussd.py.
     ussd_service_code = os.environ.get("USSD_SERVICE_CODE", "")
+
+    # Africa's Talking SMS -- same account as USSD, "sandbox" as the
+    # username in sandbox mode. Used by app/services/sms_client.py for
+    # real guarantor confirmation SMS.
+    africastalking_username = os.environ.get("AFRICASTALKING_USERNAME", "sandbox")
+    africastalking_api_key = os.environ.get("AFRICASTALKING_API_KEY", "")
+
+    # Base URL of the (not yet built) frontend -- the guarantor
+    # confirmation SMS links here. Empty until a real frontend exists;
+    # the backend token contract works regardless of whether this
+    # resolves to anything yet.
+    frontend_base_url = os.environ.get("FRONTEND_BASE_URL", "")
 
 
 settings = Settings()
