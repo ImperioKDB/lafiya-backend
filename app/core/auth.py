@@ -1,8 +1,31 @@
 import jwt
+from jwt import PyJWKClient
 from fastapi import Header, HTTPException, Depends
 from app.core.config import settings
 from app.core.supabase_client import get_service_client
 from app.models.common import CurrentUser
+
+# This project has migrated to Supabase's newer JWT Signing Keys system
+# (asymmetric, ES256) -- confirmed directly against the live dashboard
+# (Settings -> API -> JWT Keys), not assumed. Supabase's own docs are
+# explicit that once migrated, new session tokens are signed with the
+# asymmetric key and the old shared secret stops working for them --
+# there's no string to paste into SUPABASE_JWT_SECRET that fixes this,
+# the verification approach itself has to change.
+#
+# JWKS endpoint format confirmed from Supabase's own JWT documentation
+# (Auth -> JWT Signing Keys -> "Access the currently trusted signing
+# keys at the following endpoint"). PyJWKClient caches the fetched keys
+# internally, so this isn't a network round trip on every request.
+_JWKS_URL = settings.supabase_url.rstrip("/") + "/auth/v1/.well-known/jwks.json"
+_jwks_client = None
+
+
+def _get_jwks_client():
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = PyJWKClient(_JWKS_URL)
+    return _jwks_client
 
 
 def _decode_token(authorization: str = Header(default=None)):
@@ -11,13 +34,34 @@ def _decode_token(authorization: str = Header(default=None)):
 
     token = authorization.split(" ", 1)[1]
 
+    # Branch on the token's own alg header rather than assuming one or
+    # the other -- a token issued before this project's migration could
+    # still be a valid, unexpired HS256 token; anything issued since is
+    # ES256. Both are real possibilities until every pre-migration
+    # token has expired, not a hypothetical.
     try:
-        payload = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
+        unverified_header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    alg = unverified_header.get("alg")
+
+    try:
+        if alg == "HS256":
+            payload = jwt.decode(
+                token,
+                settings.supabase_jwt_secret,
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+        else:
+            signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
+            payload = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=[alg],
+                audience="authenticated",
+            )
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
