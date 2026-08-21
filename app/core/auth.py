@@ -17,6 +17,12 @@ from app.models.common import CurrentUser
 # (Auth -> JWT Signing Keys -> "Access the currently trusted signing
 # keys at the following endpoint"). PyJWKClient caches the fetched keys
 # internally, so this isn't a network round trip on every request.
+#
+# ES256/RS256 verification in PyJWT requires the optional `cryptography`
+# backend (requirements.txt now pins pyjwt[crypto], not plain pyjwt) --
+# without it, PyJWT can't even attempt asymmetric verification and
+# raises an algorithm-not-supported error that looked, from the outside,
+# identical to a real invalid token.
 _JWKS_URL = settings.supabase_url.rstrip("/") + "/auth/v1/.well-known/jwks.json"
 _jwks_client = None
 
@@ -34,14 +40,10 @@ def _decode_token(authorization: str = Header(default=None)):
 
     token = authorization.split(" ", 1)[1]
 
-    # Branch on the token's own alg header rather than assuming one or
-    # the other -- a token issued before this project's migration could
-    # still be a valid, unexpired HS256 token; anything issued since is
-    # ES256. Both are real possibilities until every pre-migration
-    # token has expired, not a hypothetical.
     try:
         unverified_header = jwt.get_unverified_header(token)
-    except jwt.PyJWTError:
+    except jwt.PyJWTError as e:
+        print("AUTH DEBUG: could not read token header -- " + repr(e))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     alg = unverified_header.get("alg")
@@ -62,7 +64,14 @@ def _decode_token(authorization: str = Header(default=None)):
                 algorithms=[alg],
                 audience="authenticated",
             )
-    except jwt.PyJWTError:
+    except Exception as e:
+        # TEMPORARY diagnostic logging -- prints the real exception to
+        # Render's logs instead of only ever surfacing the same generic
+        # 401 to the client. Remove once auth is confirmed stable; this
+        # is deliberately broad (not just jwt.PyJWTError) so a
+        # dependency/config problem like a missing crypto backend shows
+        # up here too, not just a genuinely bad token.
+        print("AUTH DEBUG: token verification failed -- alg=" + str(alg) + " error=" + repr(e))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     return token, payload
