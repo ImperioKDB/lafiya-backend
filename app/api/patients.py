@@ -56,6 +56,21 @@ def register_patient(payload: PatientCreate, user: CurrentUser = Depends(require
     return patient
 
 
+@router.get("", response_model=list[PatientOut])
+# NEW -- the dashboard/loans/triage screens all call GET /api/patients
+# (no id) expecting a list scoped to the calling CHW. That route never
+# existed: only POST /api/patients and GET /api/patients/{id} were
+# registered, so a GET to the bare path matched no method here and
+# FastAPI/Starlette returned 405, not 404 -- which is what was showing
+# up as "Couldn't load your dashboard / Method Not Allowed" in the app.
+# Relies entirely on chw_own_patients RLS to scope the result -- no
+# extra .eq() filter needed, same trust boundary as get_patient below.
+def list_patients(user: CurrentUser = Depends(require_role("chw"))):
+    client = get_user_client(user.access_token)
+    result = client.table("patients").select("*").order("created_at", desc=False).execute()
+    return result.data or []
+
+
 @router.get("/{patient_id}", response_model=PatientOut)
 # Scoped to chw-owned patients for this endpoint. Doctor access to
 # patient records now exists too, via the doctor_read_linked_patients
