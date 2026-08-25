@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import health, patients, consultations, loans, guarantors, wema, claims, admin, ussd, me
+from app.api import health, patients, consultations, loans, guarantors, wema, claims, admin, ussd, me, earnings
 
 app = FastAPI(title="LAFIYA API", version="0.1.0")
 
@@ -31,3 +31,4 @@ app.include_router(claims.router)
 app.include_router(admin.router)
 app.include_router(ussd.router)
 app.include_router(me.router)
+app.include_router(earnings.router)
