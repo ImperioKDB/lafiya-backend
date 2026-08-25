@@ -1,0 +1,32 @@
+name: Keep backend warm
+
+"on":
+  schedule:
+    # Every 12 minutes -- comfortably under Render free tier's ~15min
+    # idle-sleep threshold, without pinging so aggressively it burns
+    # through the monthly free instance-hour budget for no reason.
+    # (24/7 at this interval is ~730 hours/month on its own -- worth
+    # checking this is the only always-on free service on the account,
+    # since Render's free-tier hour budget is shared across services.)
+    - cron: '*/12 * * * *'
+  workflow_dispatch: {} # lets you trigger a manual wake-up from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://lafiya-backend-bo5p.onrender.com/)
+          echo "Backend responded with HTTP $STATUS"
+          # Any HTTP response at all -- even a 404 -- means the instance
+          # is awake. This ping only exists to keep the process warm,
+          # not to check a specific route's correctness. Only a
+          # curl-level failure (timeout, connection refused -- no HTTP
+          # status at all, which curl reports as 000) fails the job,
+          # since that's what actually indicates "asleep or down"
+          # rather than just "no route at /".
+          if [ -z "$STATUS" ] || [ "$STATUS" = "000" ]; then
+            echo "No response at all -- backend may be down, not just cold."
+            exit 1
+          fi
