@@ -27,7 +27,12 @@ def _to_out(row: dict) -> dict:
 def create_consultation(payload: ConsultationCreate, user: CurrentUser = Depends(require_role("chw"))):
     client = get_user_client(user.access_token)
 
-    scored = score_urgency(payload.symptom_category, payload.transcript)
+    # symptom_category is optional from this entry point (see
+    # app/models/consultation.py) -- default to "other" when the
+    # smartphone app didn't supply one, matching score_urgency's own
+    # built-in fallback for any unrecognized category.
+    category = payload.symptom_category or "other"
+    scored = score_urgency(category, payload.transcript)
 
     insert_result = (
         client.table("consultations")
