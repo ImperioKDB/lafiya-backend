@@ -5,8 +5,19 @@ from app.services.triage import SYMPTOM_CATEGORIES
 
 class ConsultationCreate(BaseModel):
     patient_id: str
-    symptom_category: str = Field(
-        ..., description="One of: " + ", ".join(SYMPTOM_CATEGORIES.keys())
+    # NEW -- was required with no default, but the smartphone app's
+    # Triage screen (voice and text modes) never collects a category at
+    # all -- only the USSD numeric-menu path was ever designed to supply
+    # one (Master Build Spec SS9). Every text/voice submission from the
+    # frontend was failing 422 as a result. Defaulting to None here and
+    # falling back to "other" in the endpoint matches score_urgency's
+    # own existing fallback behavior exactly (app/services/triage.py
+    # already treats any unrecognized category as "other") -- this is a
+    # decision made in this pass, not a silent behavior change: flag if
+    # a real category-picker UI is wanted on the smartphone flow later.
+    symptom_category: Optional[str] = Field(
+        default=None,
+        description="One of: " + ", ".join(SYMPTOM_CATEGORIES.keys()) + ". Defaults to 'other' if omitted.",
     )
     # Optional for now -- live Whisper wiring is Master Build Spec Phase 2,
     # the next thing after this. Until then this is either omitted
