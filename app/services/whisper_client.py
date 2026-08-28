@@ -1,11 +1,30 @@
 import requests
 from app.core.config import settings
 
-# OpenAI's hosted Whisper endpoint -- blueprint SS27 lists "Whisper
-# (OpenAI API or self-hosted)"; this is the OpenAI-API path. Swap this
-# client for a self-hosted call later without touching the caller in
-# app/api/consultations.py -- transcribe_audio() is the whole contract.
-WHISPER_URL = "https://api.openai.com/v1/audio/transcriptions"
+# Groq and OpenAI both expose the same multipart transcription contract
+# (POST an audio file + model name, get back JSON with a "text" field) --
+# Groq's endpoint is literally namespaced /openai/v1/... because it's
+# built to be OpenAI-compatible. That means switching providers is a
+# config change (WHISPER_PROVIDER + the matching API key), never a code
+# change here.
+#
+# Groq is the default because it's free -- a generous per-day request
+# quota, no card required -- and it hosts Whisper large-v3 on their own
+# hardware, not a degraded model. Confirm current limits at
+# console.groq.com/docs/rate-limits before a real pilot; hackathon/demo
+# volume is comfortably inside them.
+PROVIDER_CONFIG = {
+    "groq": {
+        "url": "https://api.groq.com/openai/v1/audio/transcriptions",
+        "default_model": "whisper-large-v3-turbo",
+        "api_key": lambda: settings.groq_api_key,
+    },
+    "openai": {
+        "url": "https://api.openai.com/v1/audio/transcriptions",
+        "default_model": "whisper-1",
+        "api_key": lambda: settings.openai_api_key,
+    },
+}
 
 
 class WhisperError(Exception):
@@ -16,32 +35,40 @@ class WhisperError(Exception):
 
 
 def transcribe_audio(audio_bytes: bytes, filename: str) -> str:
-    if not settings.openai_api_key:
-        raise WhisperError("OPENAI_API_KEY not configured")
+    provider = settings.whisper_provider if settings.whisper_provider in PROVIDER_CONFIG else "groq"
+    cfg = PROVIDER_CONFIG[provider]
+    api_key = cfg["api_key"]()
+
+    if not api_key:
+        raise WhisperError(
+            provider.upper() + "_API_KEY not configured (WHISPER_PROVIDER=" + provider + ")"
+        )
+
+    model = settings.whisper_model or cfg["default_model"]
 
     try:
         response = requests.post(
-            WHISPER_URL,
-            headers={"Authorization": "Bearer " + settings.openai_api_key},
+            cfg["url"],
+            headers={"Authorization": "Bearer " + api_key},
             files={"file": (filename, audio_bytes)},
-            data={"model": "whisper-1"},
+            data={"model": model},
             timeout=30,
         )
     except requests.RequestException as e:
-        raise WhisperError("Could not reach Whisper: " + str(e))
+        raise WhisperError("Could not reach " + provider + " transcription API: " + str(e))
 
     if response.status_code != 200:
         raise WhisperError(
-            "Whisper API returned " + str(response.status_code) + ": " + response.text[:300]
+            provider + " transcription API returned " + str(response.status_code) + ": " + response.text[:300]
         )
 
     try:
         payload = response.json()
     except ValueError:
-        raise WhisperError("Whisper API returned a non-JSON response")
+        raise WhisperError(provider + " transcription API returned a non-JSON response")
 
     text = (payload.get("text") or "").strip()
     if not text:
-        raise WhisperError("Whisper API returned an empty transcript")
+        raise WhisperError(provider + " transcription API returned an empty transcript")
 
     return text
