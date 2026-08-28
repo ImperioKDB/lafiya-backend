@@ -36,6 +36,11 @@ class Settings:
     africastalking_username = os.environ.get("AFRICASTALKING_USERNAME", "sandbox")
     africastalking_api_key = os.environ.get("AFRICASTALKING_API_KEY", "")
 
+    # OpenAI's hosted Whisper API -- blueprint SS27, used by
+    # app/services/whisper_client.py to transcribe voice-triage audio.
+    # Never committed; set only in Render's dashboard.
+    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+
     # Base URL of the (not yet built) frontend -- the guarantor
     # confirmation SMS links here. Empty until a real frontend exists;
     # the backend token contract works regardless of whether this
