@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Form, UploadFile, File
 from app.core.auth import require_role
 from app.core.supabase_client import get_user_client, get_service_client
 from app.models.common import CurrentUser
-from app.models.consultation import ConsultationCreate, ConsultationUpdate, ConsultationOut
-from app.services.triage import score_urgency, _label as urgency_label
+from app.models.consultation import ConsultationUpdate, ConsultationOut
+from app.services.triage import score_urgency, _label as urgency_label, SYMPTOM_CATEGORIES
+from app.services.whisper_client import transcribe_audio, WhisperError
 
 router = APIRouter(prefix="/api/consultations", tags=["consultations"])
 
@@ -21,25 +23,68 @@ def _to_out(row: dict) -> dict:
 
 
 @router.post("", response_model=ConsultationOut, status_code=201)
-# RLS's chw_insert_own_patient_consultations policy requires patient_id
-# to belong to a patient this chw registered -- enforced at the DB
-# layer, not just here. If the insert comes back empty, RLS rejected it.
-def create_consultation(payload: ConsultationCreate, user: CurrentUser = Depends(require_role("chw"))):
+# Switched from a JSON body (ConsultationCreate) to multipart form
+# fields -- this is the one endpoint that has to accept an audio file,
+# and FastAPI can't mix a JSON body with UploadFile on the same route.
+# The text-fallback path (no `audio`) now goes through the same
+# multipart contract instead of a second JSON shape, so there's one
+# request format to maintain, not two.
+#
+# symptom_category is required and validated against the exact same
+# SYMPTOM_CATEGORIES the USSD numeric menu uses (app/services/triage.py)
+# -- PRD SS6.7's "single source of truth" note applies to the *category
+# list*, not just the scoring function behind it. Previously nothing on
+# the frontend sent this field at all, which the old required
+# pydantic field would have rejected outright; this was never actually
+# wired end-to-end before now.
+def create_consultation(
+    patient_id: str = Form(...),
+    symptom_category: str = Form(...),
+    transcript: Optional[str] = Form(default=None),
+    audio: Optional[UploadFile] = File(default=None),
+    user: CurrentUser = Depends(require_role("chw")),
+):
+    if symptom_category not in SYMPTOM_CATEGORIES:
+        raise HTTPException(
+            status_code=422,
+            detail="symptom_category must be one of: " + ", ".join(SYMPTOM_CATEGORIES.keys()),
+        )
+
     client = get_user_client(user.access_token)
+    final_transcript = transcript
 
-    # symptom_category is optional from this entry point (see
-    # app/models/consultation.py) -- default to "other" when the
-    # smartphone app didn't supply one, matching score_urgency's own
-    # built-in fallback for any unrecognized category.
-    category = payload.symptom_category or "other"
-    scored = score_urgency(category, payload.transcript)
+    # Live Whisper call -- Master Build Spec SS8/PRD SS9: transcription
+    # happens here, server-side, never trusted from a client-supplied
+    # transcript when audio is actually present. A text-only submission
+    # (mic denied, or the CHW chose to type) skips this branch entirely
+    # and uses the Form-supplied transcript as-is.
+    if audio is not None:
+        audio_bytes = audio.file.read()
+        try:
+            final_transcript = transcribe_audio(audio_bytes, audio.filename or "triage-audio.webm")
+        except WhisperError as e:
+            # Matches blueprint SS17's exact error state for this
+            # feature -- "Couldn't reach Whisper -- saved to offline
+            # queue, will transcribe on reconnect" -- surfaced as a 502
+            # so the frontend's error state can offer "switch to typing"
+            # rather than hang.
+            raise HTTPException(
+                status_code=502,
+                detail="Couldn't reach Whisper -- saved to offline queue, will transcribe on reconnect: " + str(e),
+            )
 
+    scored = score_urgency(symptom_category, final_transcript)
+
+    # RLS's chw_insert_own_patient_consultations policy requires
+    # patient_id to belong to a patient this chw registered -- enforced
+    # at the DB layer, not just here. If the insert comes back empty,
+    # RLS rejected it.
     insert_result = (
         client.table("consultations")
         .insert(
             {
-                "patient_id": payload.patient_id,
-                "transcript": payload.transcript,
+                "patient_id": patient_id,
+                "transcript": final_transcript,
                 "urgency_score": scored["score"],
                 "status": "queued",
             }
