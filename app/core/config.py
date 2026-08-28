@@ -36,9 +36,14 @@ class Settings:
     africastalking_username = os.environ.get("AFRICASTALKING_USERNAME", "sandbox")
     africastalking_api_key = os.environ.get("AFRICASTALKING_API_KEY", "")
 
-    # OpenAI's hosted Whisper API -- blueprint SS27, used by
-    # app/services/whisper_client.py to transcribe voice-triage audio.
-    # Never committed; set only in Render's dashboard.
+    # Voice-triage transcription -- app/services/whisper_client.py.
+    # WHISPER_PROVIDER picks which API-compatible backend to call
+    # ("groq" or "openai"); Groq is the default because it's free.
+    # WHISPER_MODEL is optional -- each provider has a sane default
+    # model baked into whisper_client.py if this is left blank.
+    whisper_provider = os.environ.get("WHISPER_PROVIDER", "groq").strip().lower()
+    whisper_model = os.environ.get("WHISPER_MODEL", "").strip()
+    groq_api_key = os.environ.get("GROQ_API_KEY", "")
     openai_api_key = os.environ.get("OPENAI_API_KEY", "")
 
     # Base URL of the (not yet built) frontend -- the guarantor
